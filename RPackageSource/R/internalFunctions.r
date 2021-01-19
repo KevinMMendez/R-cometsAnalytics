@@ -44,7 +44,29 @@ fixData <- function(dta,compbl=FALSE) {
   return(dta)
 } # end fixData function
 
+checkForSameVars <- function(v1, v2) {
 
+  # Variables should be "tolowered" at this point
+  ret <- FALSE
+  n1  <- length(v1)
+  if (n1 != length(v2)) stop("Vectors do not have the same length")
+  v1  <- trimws(v1)
+  v2  <- trimws(v2)
+  tmp <- !is.na(v1) & !is.na(v2) & (nchar(v1) > 0) & (nchar(v2) > 0)
+  tmp[is.na(tmp)] <- FALSE
+  if (any(tmp)) {
+    rows <- (1:n1)[tmp]
+    for (row in rows) {
+      vars1 <- trimws(unlist(strsplit(v1[row], " ", fixed=TRUE)))
+      vars2 <- trimws(unlist(strsplit(v2[row], " ", fixed=TRUE)))
+      tmp   <- intersect(vars1, vars2)
+      if (length(tmp)) return(TRUE)
+    }
+  }
+
+  ret
+
+} # END: cehckForSameVars
 
 
 # ---------------------------------------------------------------------------
@@ -61,42 +83,63 @@ fixData <- function(dta,compbl=FALSE) {
 checkIntegrity <- function (dta.metab,dta.smetab, dta.sdata,dta.vmap,dta.models,dict_metabnames) {
 
     print("Running Integrity Check...")
+
+    allVars.data   <- trimws(colnames(dta.sdata))
+    allVars.metabs <- trimws(dict_metabnames)  
+    allVars.common <- intersect(allVars.data, allVars.metabs)
+    allVars        <- c(allVars.data, allVars.metabs)
+    metabIdName    <- getVarRef_metabId()
+    subjidNew      <- getVarRef_subjectId()
+
     # get the cohort equivalent of metabolite_id and subject id
-    metabid = tolower(dta.vmap$cohortvariable[tolower(dta.vmap$varreference) == "metabolite_id"])
-    subjid = tolower(dta.vmap$cohortvariable[tolower(dta.vmap$varreference) == 'id'])
+    metabid = tolower(dta.vmap$cohortvariable[tolower(dta.vmap$varreference) == metabIdName])
+    subjid = tolower(dta.vmap$cohortvariable[tolower(dta.vmap$varreference) == subjidNew])
     subjid.smetab = names(dict_metabnames)[which(dict_metabnames==subjid)] # to access dta.smetab
     # add _ to all metabolites before splitting at blank
     allmodelparams=c(dta.models$outcomes,dta.models$exposure, dta.models$adjustment,dta.models$stratification)
     allmodelparams=gsub("All metabolites","All_metabolites",gsub("\\s+", " ", allmodelparams[!is.na(allmodelparams)]))
-    print(paste(dta.models$ccovs,dta.models$scovs))
+    allmodelparams=gsub("all metabolites","All_metabolites", allmodelparams, fixed=TRUE)
+
+    #print(paste(dta.models$ccovs,dta.models$scovs))
 
     # take out multiple blanks and add _ to all metabolites to avoid splitting
     allmodelparams=tolower(unique(unlist(stringr::str_split(allmodelparams," "))))
     outmessage = c()
+
+    # See if the variables exist in the data
+    params <- unique(allmodelparams[!(allmodelparams %in% c("All_metabolites", "all_metabolites"))])
+    tmp    <- !(params %in% allVars)
+    if (any(tmp)) {
+      tmp <- paste0(params[tmp], collapse=", ")
+      msg <- paste0("ERROR: the variable(s) ", tmp, 
+                    " do not exist in the data! Check the naming!")
+      stop(msg)
+    }
+
+    # See if any of the variables are in both sets of data
+    tmp <- params %in% allVars.common
+    if (any(tmp)) {
+      tmp <- paste0(params[tmp], collapse=", ")
+      msg <- paste0("ERROR: the variable(s) ", tmp, 
+                   " are on both the SubjectData and SubjectMetabolite sheets")
+      stop(msg)
+    }
+
     if (length(metabid) == 0) {
       stop("metabid is not found as a parameter in VarMap sheet!  Specify which column should be used for metabolite id")
     }
-    else if (!is.na(dta.models$stratification) &&
-		length(intersect(dta.models$adjustment,dta.models$stratification))>=1) {
+    else if (checkForSameVars(dta.models$stratification, dta.models$adjustment)) { 
 	stop("Adjustment and stratification parameters are the same!  This is not allowed.")
     }
-    else if (!is.na(dta.models$stratification) &&
-		length(intersect(dta.models$exposure,dta.models$stratification))>=1) {
+    else if (checkForSameVars(dta.models$stratification, dta.models$exposure)) { 
         stop("Exposure and stratification parameters are the same!  This is not allowed.")
-    }
-    else if (length(intersect(allmodelparams,
-         tolower(c("All_metabolites",  dta.vmap$varreference)))) !=length(allmodelparams))
-# tolower(c("All metabolites", colnames(dta.smetab), colnames(dta.sdata)))))!=length(allmodelparams))
-{
-         stop("Parameters in model data ('Models' sheet in input file) do not exist!  Check the naming!")
     }
     else if (length(subjid) == 0) {
         stop("id (for subject id) is not found as a parameter in VarMap sheet!  Specify which column should be used for subject id")
     }
-    else if (length(intersect(subjid,colnames(dta.sdata))) != 1) {
+    else if (length(intersect(subjidNew,colnames(dta.sdata))) != 1) {
         stop("The user input id in the 'COHORTVARIABLE' column of the Varmap Sheet is not found in the 'SubjectData' sheet. Check the input file.")
     }
-    #else if (length(intersect(subjid,colnames(dta.smetab))) != 1) {
      else if (length(intersect(subjid,dict_metabnames)) !=1) {
         stop("The user input id in the 'COHORTVARIABLE' column of the Varmap Sheet is not found in the 'SubjectMetabolites' sheet. Check the input file.")
     }
@@ -106,15 +149,15 @@ checkIntegrity <- function (dta.metab,dta.smetab, dta.sdata,dta.vmap,dta.models,
     else {
       #print("Passed the checks")
       dta.metab[[metabid]] = tolower(dta.metab[[metabid]])
-      dta.sdata[[subjid]] = tolower(dta.sdata[[subjid]])
+      dta.sdata[[subjidNew]] = tolower(dta.sdata[[subjidNew]])
       dta.smetab[[subjid.smetab]] = tolower(dta.smetab[[subjid.smetab]])
       if (length(grep(metabid,colnames(dta.metab))) == 0) {
           stop("Error: Metabolite ID from 'VarMap Sheet' (",metabid,") does not match column name from 'Metabolites Sheet'")
       }
-      else if (length(grep(subjid,colnames(dta.sdata))) == 0) {
+      else if (length(grep(subjidNew,colnames(dta.sdata))) == 0) {
           stop("Error: Sample ID from 'VarMap Sheet' (",subjid,") does not match a column name in 'SubjectData Sheet'")
       }
-      else if (length(unique(dta.sdata[,subjid])) != length(unique(dta.smetab[,subjid.smetab]))) {
+      else if (length(unique(dta.sdata[,subjidNew])) != length(unique(dta.smetab[,subjid.smetab]))) {
         outmessage = c(
           outmessage,"Number of subjects in SubjectData sheet does not match number of subjects in SubjectMetabolites sheet"
         )
@@ -124,7 +167,7 @@ checkIntegrity <- function (dta.metab,dta.smetab, dta.sdata,dta.vmap,dta.models,
           outmessage,"Metabolite abundances sheet (SubjectMetabolites) contains duplicate columns (metabolite names)"
         )
       }
-      else if (length(unique(unlist(dta.sdata[,subjid]))) != nrow(dta.sdata)) {
+      else if (length(unique(unlist(dta.sdata[,subjidNew]))) != nrow(dta.sdata)) {
         outmessage = c(
           outmessage,"Warning: Sample Information sheet (SubjectData) contains duplicate ids"
         )
@@ -140,7 +183,7 @@ checkIntegrity <- function (dta.metab,dta.smetab, dta.sdata,dta.vmap,dta.models,
         numsamples = length(unique(dta.smetab[[subjid.smetab]]))
         if (length(intersect(as.character(unlist(dta.metab[,metabid])),colnames(dta.smetab)[-c(which(colnames(dta.smetab) ==
             subjid.smetab))])) == nummetab &&
-            length(intersect(as.character(unlist(dta.sdata[,subjid])),dta.smetab[[subjid.smetab]])) ==
+            length(intersect(as.character(unlist(dta.sdata[,subjidNew])),dta.smetab[[subjid.smetab]])) ==
             numsamples) {
           outmessage = c(
             outmessage,"Passed all integrity checks, analyses can proceed. If you are part of COMETS, please download metabolite list below and submit to the COMETS harmonization group."
@@ -153,7 +196,7 @@ checkIntegrity <- function (dta.metab,dta.smetab, dta.sdata,dta.vmap,dta.models,
 		tolower(colnames(dta.smetab)))) != nummetab) {	
               stop("Error: Metabolites in SubjectMetabolites DO NOT ALL match metabolite ids in Metabolites Sheet")
           }
-          if (length(intersect(dta.sdata[[subjid]],dta.smetab[[subjid.smetab]])) !=
+          if (length(intersect(dta.sdata[[subjidNew]],dta.smetab[[subjid.smetab]])) !=
               numsamples) {
               stop("Error: Sample ids in SubjectMetabolites DO NOT ALL match subject ids in SubjectData sheet")
           }
@@ -187,7 +230,7 @@ checkIntegrity <- function (dta.metab,dta.smetab, dta.sdata,dta.vmap,dta.models,
     }
 
     # rename subjid in dta.smetab sheet for merging later on
-    colnames(dta.smetab)[which(colnames(dta.smetab)==subjid.smetab)] <- subjid
+    colnames(dta.smetab)[which(colnames(dta.smetab)==subjid.smetab)] <- subjidNew
 
     return(
       list(
@@ -214,7 +257,6 @@ Harmonize<-function(dtalist){
 
   # rename metid to be the same as metabid
   colnames(mastermetid)[which(colnames(mastermetid)=="metid")]=dtalist$metabId
-
 
   # join by metabolite_id only keep those with a match
   harmlistg<-dplyr::inner_join(dtalist$metab,mastermetid,by=c(dtalist$metabId),suffix=c(".cohort",".comets"))
@@ -256,11 +298,26 @@ Harmonize<-function(dtalist){
     # need to rename to hmdb_id so that it can be left_join match
     names(finharmlistg)<-gsub(cohorthmdb,"hmdb_id",names(finharmlistg))
 
+    ###########################################################  
+    # The following code fixes a bug in the code below it. 
+    #   The select statement was throwing an error, 
+    #   and the chemical_id column was sometimes numeric.
+    ###########################################################
+
     # bring in the masterhmdb file to find further matches
-    foundhmdb<-finharmlistg %>%
-      filter(is.na(uid_01)) %>% # only find match for unmatched metabolites
-      select(1:ncol(dtalist$metab)) %>%  # keep only original columns before match
-      left_join(masterhmdb,suffix=c(".cohort",".comets"))
+    foundhmdb <- finharmlistg %>% filter(is.na(uid_01)) # only find match for unmatched metabolites
+    foundhmdb <- foundhmdb[, 1:ncol(dtalist$metab), drop=FALSE] # keep only original columns before match
+    foundhmdb <- foundhmdb %>% left_join(masterhmdb,suffix=c(".cohort",".comets"))
+    foundhmdb[, "chemical_id"] <- as.character(foundhmdb[, "chemical_id"])
+
+    # bring in the masterhmdb file to find further matches
+    #foundhmdb<-finharmlistg %>%
+    #  filter(is.na(uid_01)) %>% # only find match for unmatched metabolites
+    #  select(1:ncol(dtalist$metab)) %>%  # keep only original columns before match
+    #  left_join(masterhmdb,suffix=c(".cohort",".comets"))
+
+    ##############################################################
+
 
     # rename back so we can combine
     names(foundhmdb)<-gsub("hmdb_id",cohorthmdb,names(foundhmdb))
@@ -305,12 +362,23 @@ prdebug<-function(lab,x){
 #' @return filtered list
 #'
 filterCOMETSinput <- function(readData,where=NULL) {
-  if (!is.null(where)) {
-	samplesToKeep=c()
-	myfilts <- strsplit(where,",")
-	# create rules for each filter
-	for (i in 1:length(myfilts)) {
-		myrule <- myfilts[[i]]
+
+  if (!length(where)) {
+    warning("No filtering was performed because 'where' parameter is NULL")
+    return(readData)
+  }
+
+  samplesToKeep <- c()
+  myfilts       <- trimws(unlist(strsplit(where,",")))
+  myfilts       <- myfilts[nchar(myfilts) > 0]  
+  if (!length(myfilts)) {
+    warning("No filtering was performed because 'where' parameter contains no filters")
+    return(readData)
+  }
+
+  # create rules for each filter
+  for (i in 1:length(myfilts)) {
+		myrule <- myfilts[i]
                 if(length(grep("<=",myrule))>0) {
                         mysplit <- strsplit(myrule,"<=")[[1]]
 			#myvar <- readData$vmap$cohortvariable[which(readData$vmap$varreference==gsub(" ","",mysplit[1]))]
@@ -329,30 +397,64 @@ filterCOMETSinput <- function(readData,where=NULL) {
 			myvar = gsub(" ","",mysplit[1])
                		samplesToKeep <- c(samplesToKeep,
                            which(as.numeric(as.character(readData$subjdata[,myvar])) < gsub(" ","",as.numeric(mysplit[2]))) )
-        	} else if(length(grep(">",myfilts[i]))>0) {
+        	} else if(length(grep(">",myrule))>0) {
 	        	mysplit <- strsplit(myrule,">")[[1]]
 			#myvar <- readData$vmap$cohortvariable[which(readData$vmap$varreference==gsub(" ","",mysplit[1]))]
 			myvar = gsub(" ","",mysplit[1])
                         samplesToKeep <- c(samplesToKeep,
                            which(as.numeric(as.character(readData$subjdata[,myvar])) > as.numeric(gsub(" ","",mysplit[2]))) )
-		} else if (length(grep("=",myfilts[i]))>0) {
-			mysplit <- strsplit(myrule,"=")[[1]]
-			# myvar <- readData$vmap$cohortvariable[which(readData$vmap$varreference==gsub(" ","",mysplit[1]))]
-                        myvar = gsub(" ","",mysplit[1])
-			samplesToKeep <- c(samplesToKeep,
-                           which(as.numeric(as.character(readData$subjdata[,myvar])) == gsub(" ","",as.numeric(mysplit[2]))) )
+		} else if (length(grep("!=",myrule))>0) {
+                tmp <- getSubsFromEqWhere(readData$subjdata, myrule, notEqual=1)   
+                samplesToKeep <- c(samplesToKeep, tmp)  
+              } else if (length(grep("=",myrule))>0) {
+                tmp <- getSubsFromEqWhere(readData$subjdata, myrule, notEqual=0)   
+                samplesToKeep <- c(samplesToKeep, tmp)  
         	} else
                 stop("Make sure your 'where' filters contain logicals '>', '<', or '='")
-        }
-	mycounts <- as.numeric(lapply(unique(samplesToKeep),function(x)
-		length(which(samplesToKeep==x))))
-	fincounts <- which(mycounts == length(myfilts))
-        readData$subjdata <- readData$subjdata[unique(samplesToKeep)[fincounts],]
   }
-  else {(warning("No filtering was performed because 'where' parameter is NULL"))}
-return(readData)
+  mycounts          <- as.numeric(lapply(unique(samplesToKeep),function(x)
+                                            length(which(samplesToKeep==x))))
+  fincounts         <- which(mycounts == length(myfilts))
+  readData$subjdata <- readData$subjdata[unique(samplesToKeep)[fincounts],]
+  
+  return(readData)
 }
 
+# Function to identify subjects from a != or == where condition
+getSubsFromEqWhere <- function(data, myrule, notEqual=1) {
+
+  if (notEqual) {
+    op <- "!="
+  } else {
+    op <- "="
+  }
+  mysplit <- strsplit(myrule, op, fixed=TRUE)[[1]]
+  tmp     <- nchar(trimws(mysplit)) > 0  # Takes care of cases == and =
+  mysplit <- mysplit[tmp]
+  myvar   <- mysplit[1]
+  
+  # Take missing values into account
+  missFlag <- length(mysplit) < 2
+
+  # Variable could be a character variable
+  vec <- data[, myvar, drop=TRUE]
+  if (is.factor(vec)) vec <- unfactor(vec)
+  if (!missFlag) {
+    if (is.character(vec)) {
+      value <- mysplit[2]
+    } else {
+      value <- as.numeric(mysplit[2])
+    }
+    tmp <- vec %in% value
+  } else {
+    tmp <- is.na(vec)
+  }
+  if (notEqual) tmp <- !tmp
+  ret <- which(tmp)
+
+  ret
+
+} # END: getSubsFromEqWhere
 
 #' Ensures that models will run without errors.  Preprocesses design matrix for 
 #' zero variance, linear combinations, and dummies.
@@ -404,14 +506,15 @@ checkModelDesign <- function (modeldata=NULL) {
   	loadNamespace("caret") #need this to avoid problem of not finding contr.ltfr
 
   	# check if any of the exposure and adjustments are factors
-  	ckfactor<-sapply(dplyr::select(modeldata$gdta,dplyr::one_of(modeldata$rcovs,modeldata$acovs)),class)
+  	ckfactor<-sapply(dplyr::select(modeldata$gdta,dplyr::one_of(modeldata$ccovs,modeldata$acovs)),class)
   	hasfactor<-NULL
   	if (length(ckfactor[ckfactor=="factor"])==0){
   	  hasfactor<-FALSE
   	} else {
   	  hasfactor<-TRUE
   	}
-
+       ckfactor.vars <- c(modeldata$ccovs,modeldata$acovs) 
+       
 	# If all vs all, only check variance is zero for covars and allvars
 	if(modeldata$allvsall | hasfactor==FALSE) {
 		print("No factors found,  only performing near zero variance check for all covariates.")
@@ -476,14 +579,17 @@ checkModelDesign <- function (modeldata=NULL) {
 	# Create dummy variables
 	myformula <- paste0("`",colnames(modeldata$gdta)[col.rcovar], "` ~ ",
 		paste0("`",colnames(modeldata$gdta)[c(col.ccovar, col.adj)],"`",collapse = " + "))
+
 	dummies <- caret::dummyVars(myformula, data = modeldata$gdta,fullRank = TRUE)
 	mydummies <- stats::predict(dummies, newdata = modeldata$gdta)
+
 	# Rename variables if they are returned in mydummies
 	tempccovs <- as.character(unlist(sapply(modeldata$ccovs,
 		function(x) grep(x,colnames(mydummies),value=TRUE,fixed=TRUE))))
 	if(length(tempccovs)>0) {
 		modeldata$ccovs <- tempccovs
 	}
+
 	# Check if adjusted covariates are present or else grep will return "" and will
 	# always return something
 	if(!is.null(modeldata$acovs)) {
@@ -577,28 +683,15 @@ checkModelDesign <- function (modeldata=NULL) {
 	}
      #print(warningmessage)
      #print(errormessage)
+
      return(list(warningmessage=warningmessage,errormessage=errormessage,modeldata=modeldata))
      }
 }
 
-
-#--------------------------------------------------------
-#' Check model design and calculate correlation matrix. This is an internal function.  Use runCorr() instead (which is a wrapper to this function).
-#'
-#' @param modeldata list from function getModelData
-#' @param metabdata metabolite data list
-#' @param cohort cohort label (e.g DPP, NCI, Shanghai)
-#'
-#' @return data frame with each row representing the correlation for each combination of outcomes and exposures represented as specified in the
-#' model (*spec), label (*lab), and universal id (*_uid)
-#' with additional columns for n, pvalue, method of model specification (Interactive or Batch), universal id for outcomes () and exposures
-#' name of the cohort and adjustment variables. Attribute of dataframe includes ptime for processing time of model
-#' run.
-calcCorr <- function(modeldata, metabdata, cohort = "") {
-  .Machine$double.eps <- 1e-300
+# Common code for adding metabolite info
+addMetabInfo <- function(corrlong, modeldata, metabdata) {
 
   # Defining global variables to pass Rcheck()
-  #ptm <- proc.time() # start processing time
   metabid = uid_01 = biochemical = outmetname = outcomespec = exposuren =
     exposurep = metabolite_id = c()
   cohortvariable = vardefinition = varreference = outcome = outcome_uid =
@@ -606,164 +699,6 @@ calcCorr <- function(modeldata, metabdata, cohort = "") {
   metabolite_name = expmetname = exposurespec = c()
   adjname = adjvars = adj_uid = c()
 
-  # column indices of row/outcome covariates
-  col.rcovar <-
-    match(modeldata[["rcovs"]], names(modeldata[["gdta"]]))
-
-  # column indices of column/exposure covariates
-  col.ccovar <-
-    match(modeldata[["ccovs"]], names(modeldata[["gdta"]]))
-
-  # column indices of adj-var
-  col.adj <- match(modeldata[["acovs"]], names(modeldata[["gdta"]]))
-
-  # Defining global variable to remove R check warnings
-  corr = c()
-
-  # Check model design
-  designcheck <- checkModelDesign(modeldata)
-  if (length(names(designcheck)) == 0) {
-    return(designcheck)
-  }
-
-  newmodeldata <- designcheck$modeldata
-  #print(designcheck$warningmessage)
-  if (length(designcheck$warningmessage) > 0) {
-    print(designcheck$warningmessage)
-  }
-  if (length(designcheck$errormessage) > 0) {
-    print(designcheck$errormessage)
-    return(NULL)
-  }
-
-  # readjust exposure and adjustment covariates
-  col.adj <-
-    match(newmodeldata[["acovs"]], colnames(newmodeldata[["gdta"]]))
-  col.ccovar <-
-    match(newmodeldata[["ccovs"]], colnames(newmodeldata[["gdta"]]))
-  col.rcovar <-
-    match(newmodeldata[["rcovs"]], colnames(newmodeldata[["gdta"]]))
-
-
-
-  if (length(col.adj) == 0) {
-    print("running unadjusted")
-
-    data <- newmodeldata$gdta[ , unique(c(col.rcovar, col.ccovar))]
-    # calculate unadjusted spearman correlation matrix
-    corrhm <- Hmisc::rcorr(as.matrix(data), type = "spearman")
-
-    # Need to transpose pval and corrhm if there's only one row bc data.frame will switch the rows
-    # and columns when there's only one row. 
-    if(length(newmodeldata$rcovs)==1) {
-	corr <- t(data.frame(corrhm$r[newmodeldata$rcovs,newmodeldata$ccovs]))
-	n<-t(data.frame(corrhm$n[newmodeldata$rcovs,newmodeldata$ccovs]))
-    } else {
-    	corr <- data.frame(corrhm$r[newmodeldata$rcovs,newmodeldata$ccovs])
-        n <- data.frame(corrhm$n[newmodeldata$rcovs,newmodeldata$ccovs])
-    }
-    #    pval <- as.data.frame(corrhm$P[1:length(col.rcovar),-(1:length(col.rcovar))])
-    # Calculate p-values by hand to ensure that enough precision is printed:
-    	ttval <- sqrt(n--2) * corr / sqrt(1 - corr ** 2)
-    # From this t-statistic, loop through and calculate p-values
-    pval <- ttval
-    for (i in 1:length(newmodeldata$ccovs)) {
-      pval[, i] <-
-        as.vector(stats::pt(
-          as.matrix(abs(ttval[, i])),
-          df = n[, i] - 2,
-          lower.tail = FALSE
-        ) * 2)
-    }
-
-    #colnames(corr) <- colnames(corrhm$r)[-(1:length(col.rcovar))]
-    # Fix rownames when only one outcome is considered:
-    if (length(col.rcovar) == 1) {
-      rownames(corr) <- newmodeldata$rcovs
-      rownames(pval) <- newmodeldata$rcovs
-    }
-    if (length(col.ccovar) == 1) {
-      colnames(corr) <- newmodeldata$ccovs
-      colnames(pval) <- newmodeldata$ccovs
-    }
-    # no longer needed
-    #colnames(n) <- colnames(corrhm$n)[-(1:length(col.rcovar))]
-    #colnames(pval) <- colnames(corrhm$P)[-(1:length(col.rcovar))]
-
-
-    # If there are more than one exposure, then need to transpose - not sure why???
-#    if (length(col.ccovar) > 1 && length(col.rcovar) == 1) {
-#      corr = as.data.frame(t(corr))
-#      pval = as.data.frame(t(pval))
-#    }
-
-  }  else {
-    # calculate partial correlation matrix
-    print("running adjusted")
-
-    # Loop through and calculate cor, n, and p-values
-    pval <- corr <- n <- matrix(nrow = length(newmodeldata$rcovs),
-             ncol = length(newmodeldata$ccovs))
-    rownames(pval) = rownames(n) = rownames(corr) = newmodeldata$rcovs
-    colnames(pval) = paste0(newmodeldata$ccovs, ".p")
-    colnames(n) = paste0(newmodeldata$ccovs, ".n")
-    colnames(corr) = newmodeldata$ccovs
-    for (i in 1:length(newmodeldata$rcovs)) {
-    #  print(newmodeldata$rcovs[i])
-      for (j in 1:length(newmodeldata$ccovs)) {
-        if (newmodeldata$rcovs[i]!=newmodeldata$ccovs[j]) {
-        temp <- ppcor::pcor.test(newmodeldata$gdta[, newmodeldata$rcovs[i]],
-                                 newmodeldata$gdta[, newmodeldata$ccovs[j]],
-                                 newmodeldata$gdta[, newmodeldata$acovs],
-                                 method = "spearman")
-        pval[i, j] <- round(temp$p.value, digits = 20)
-        corr[i, j] <- round(temp$estimate, digits = 20)
-        n [i, j] <- temp$n
-        } else{
-          pval[i, j] <- 0
-          corr[i, j] <- 1
-          n[i, j] <- sum(!is.na(newmodeldata$gdta[, newmodeldata$ccovs[j]]))
-        }
-
-      }
-    }
-    pval <- as.data.frame(pval)
-    n <- as.data.frame(n)
-    corr <- as.data.frame(corr)
-
-    # Rename the adjusted covariate now to original (without dummies)
-    #modeldata$acovs=oldcol.adj
-    print("finished adjustment")
-
-  } # End else adjusted mode (length(col.adj) is not zero)
-
-  # create long data with pairwise correlations  ----------------------------------------------------
-  mycols <- 1:length(col.ccovar)
-  corr.togather <- cbind(corr, outcomespec = rownames(corr))
-  if(class(corr.togather)=="matrix") {corr.togather<-as.data.frame(corr.togather)}
-  corrlong <-
-    suppressWarnings(fixData(
-      data.frame(
-        cohort = cohort,
-        spec = modeldata$modelspec,
-        model = modeldata$modlabel,
-        tidyr::gather(corr.togather,
-                      "exposurespec", "corr", -outcomespec),
-        tidyr::gather(as.data.frame(n), "exposuren", "n", colnames(n)[mycols]),
-        tidyr::gather(as.data.frame(pval), "exposurep", "pvalue", colnames(pval)[mycols]),
-        adjspec = ifelse(
-          length(col.adj) == 0,
-          "None",
-          paste(newmodeldata$acovs, collapse = " ")
-        ),
-        adjvars = ifelse(
-          length(col.adj) == 0,
-          "None",
-          paste(modeldata$acovs, collapse = " ")
-        )
-      )
-    ) %>%
-    dplyr::select(-exposuren,-exposurep))
 
   # patch in metabolite info for exposure or outcome by metabolite id  ------------------------
   # Add in metabolite information for outcome
@@ -810,11 +745,13 @@ calcCorr <- function(modeldata, metabdata, cohort = "") {
     dplyr::select(-expmetname)
 
   # Add in metabolite info for adjusted variables
-  	corrlong$adjvars <- corrlong$adjspec <- 
-	      as.character(lapply(corrlong$adjspec, function(x) {
-  	      myind <- which(names(metabdata$dict_metabnames)==x)
-  	      if(length(myind==1)) {x=metabdata$dict_metabnames[myind]}
-  	      return(x) }))
+  # This commented-out block of code does not work correctly
+  	#corrlong$adjvars <- corrlong$adjspec <- 
+	#      as.character(lapply(corrlong$adjspec, function(x) {
+  	#      myind <- which(names(metabdata$dict_metabnames)==x)
+  	#      if(length(myind==1)) {x=metabdata$dict_metabnames[myind]}
+  	#      return(x) }))
+
   	corrlong <- dplyr::left_join(
   	  corrlong,
   	  dplyr::select(
@@ -843,7 +780,7 @@ calcCorr <- function(modeldata, metabdata, cohort = "") {
     )
 
   # get good labels for the display of outcome and exposure
-  if (modeldata$modelspec == "Interactive") {
+  if (modeldata$modelspec == getMode_interactive()) {
     # fill in outcome vars from varmap if not a metabolite:
     if(length(suppressWarnings(grep(corrlong$outcomespec,vmap$cohortvariable)) != 0)) {
     	corrlong <-
@@ -870,7 +807,7 @@ calcCorr <- function(modeldata, metabdata, cohort = "") {
     	  dplyr::select(-vardefinition, -varreference)
        }
   }
-  else if (modeldata$modelspec == "Batch") {
+  else if (modeldata$modelspec == getMode_batch()) {
     # fill in outcome vars from varmap if not a metabolite
     if(length(suppressWarnings(grep(corrlong$outcomespec,vmap$cohortvariable)) != 0)) {
     	corrlong <-
@@ -905,11 +842,7 @@ calcCorr <- function(modeldata, metabdata, cohort = "") {
    }
   }
 
-  # Stop the clock
-  #  ptm <- base::proc.time() - ptm
-  #  print(paste("My ptm:", ptm))
-  #  attr(corrlong,"ptime") = paste("Processing time:",round(ptm[3],digits=6),"sec")
+  corrlong
 
-  return(corrlong)
-}
+} # END: addMetabInfo
 
